@@ -1,16 +1,20 @@
 
 #include <3ds.h>
 #include <stdio.h>
-#include <dirent.h>
+#include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 #include <ctype.h>
 
 #define MAX_GAMES 20
 #define NAME_SIZE 128
+#define SECTOR_SIZE 2048
 
 static PrintConsole topScreen, bottomScreen;
+
 static char games[MAX_GAMES][NAME_SIZE];
-static char isoInfo[512];
+static char isoInfo[700];
+
 static int gameCount = 0;
 static int selected = 0;
 static int page = 0;
@@ -21,9 +25,24 @@ static const char *options[] = {
     "Acerca de XAVRX"
 };
 
+static unsigned int readLE16(const unsigned char *p)
+{
+    return (unsigned int)p[0] |
+           ((unsigned int)p[1] << 8);
+}
+
+static unsigned int readLE32(const unsigned char *p)
+{
+    return (unsigned int)p[0] |
+           ((unsigned int)p[1] << 8) |
+           ((unsigned int)p[2] << 16) |
+           ((unsigned int)p[3] << 24);
+}
+
 static int isPSPFile(const char *name)
 {
     size_t len = strlen(name);
+
     if (len < 4) return 0;
 
     const char *ext = name + len - 4;
@@ -38,10 +57,22 @@ static int isPSPFile(const char *name)
             tolower((unsigned char)ext[3]) == 'o');
 }
 
+static int isISO(const char *name)
+{
+    size_t len = strlen(name);
+
+    return len >= 4 &&
+        tolower((unsigned char)name[len-3]) == 'i' &&
+        tolower((unsigned char)name[len-2]) == 's' &&
+        tolower((unsigned char)name[len-1]) == 'o';
+}
+
 static void scanGames(void)
 {
     gameCount = 0;
+
     DIR *dir = opendir("sdmc:/PSP");
+
     if (!dir) return;
 
     struct dirent *entry;
@@ -53,8 +84,8 @@ static void scanGames(void)
 
         if (isPSPFile(entry->d_name))
         {
-            snprintf(games[gameCount], NAME_SIZE,
-                     "%s", entry->d_name);
+            snprintf(games[gameCount],
+                     NAME_SIZE, "%s", entry->d_name);
             gameCount++;
         }
     }
@@ -62,80 +93,251 @@ static void scanGames(void)
     closedir(dir);
 }
 
-static unsigned int readLE32(const unsigned char *p)
+static int sameName(const unsigned char *name,
+                    int length, const char *wanted)
 {
-    return (unsigned int)p[0] |
-           ((unsigned int)p[1] << 8) |
-           ((unsigned int)p[2] << 16) |
-           ((unsigned int)p[3] << 24);
+    int i = 0;
+
+    while (i < length && name[i] != ';')
+    {
+        if (toupper((unsigned char)name[i]) !=
+            toupper((unsigned char)wanted[i]))
+            return 0;
+
+        i++;
+    }
+
+    return wanted[i] == '\0';
+}
+
+static int findISOEntry(FILE *f,
+                        unsigned int extent,
+                        unsigned int size,
+                        const char *wanted,
+                        unsigned int *foundExtent,
+                        unsigned int *foundSize)
+{
+    unsigned int pos = 0;
+    unsigned char record[256];
+
+    while (pos < size)
+    {
+        unsigned int sectorOffset = pos % SECTOR_SIZE;
+
+        if (fseek(f, (long)extent * SECTOR_SIZE + pos,
+                  SEEK_SET) != 0)
+            return 0;
+
+        int length = fgetc(f);
+
+        if (length <= 0)
+        {
+            pos += SECTOR_SIZE - sectorOffset;
+            continue;
+        }
+
+        if (length < 34 || length > 255 ||
+            pos + (unsigned int)length > size)
+        {
+            pos += SECTOR_SIZE - sectorOffset;
+            continue;
+        }
+
+        record[0] = (unsigned char)length;
+
+        if (fread(record + 1, 1, length - 1, f)
+            != (size_t)(length - 1))
+            return 0;
+
+        int nameLength = record[32];
+
+        if (nameLength > 0 &&
+            33 + nameLength <= length &&
+            sameName(record + 33, nameLength, wanted))
+        {
+            *foundExtent = readLE32(record + 2);
+            *foundSize = readLE32(record + 10);
+            return 1;
+        }
+
+        pos += (unsigned int)length;
+    }
+
+    return 0;
+}
+
+static int readSFO(FILE *f,
+                   unsigned int extent,
+                   unsigned int size,
+                   char *title,
+                   char *gameID,
+                   char *version)
+{
+    unsigned char header[20];
+
+    if (size < 20 ||
+        fseek(f, (long)extent * SECTOR_SIZE, SEEK_SET) != 0 ||
+        fread(header, 1, 20, f) != 20)
+        return 0;
+
+    if (memcmp(header, "\0PSF", 4) != 0)
+        return 0;
+
+    unsigned int keyOffset = readLE32(header + 8);
+    unsigned int dataOffset = readLE32(header + 12);
+    unsigned int entries = readLE32(header + 16);
+
+    if (entries > 128 ||
+        keyOffset >= size ||
+        dataOffset >= size)
+        return 0;
+
+    title[0] = '\0';
+    gameID[0] = '\0';
+    version[0] = '\0';
+
+    for (unsigned int i = 0; i < entries; i++)
+    {
+        unsigned char entry[16];
+        unsigned int entryPos = 20 + i * 16;
+
+        if (entryPos + 16 > size ||
+            fseek(f, (long)extent * SECTOR_SIZE + entryPos,
+                  SEEK_SET) != 0 ||
+            fread(entry, 1, 16, f) != 16)
+            return 0;
+
+        unsigned int key = readLE16(entry);
+        unsigned int format = readLE16(entry + 2);
+        unsigned int dataLength = readLE32(entry + 4);
+        unsigned int dataPos = readLE32(entry + 12);
+
+        if (format != 0x0204 ||
+            dataLength == 0 ||
+            dataLength > 127 ||
+            dataPos > size - dataOffset ||
+            dataLength > size - dataOffset - dataPos ||
+            key >= size - keyOffset)
+            continue;
+
+        char keyName[64];
+        unsigned int j = 0;
+
+        while (j < 63 && key + j < size - keyOffset)
+        {
+            if (fseek(f, (long)extent * SECTOR_SIZE +
+                      keyOffset + key + j, SEEK_SET) != 0)
+                break;
+
+            int c = fgetc(f);
+
+            if (c == EOF || c == 0) break;
+
+            keyName[j++] = (char)c;
+        }
+
+        keyName[j] = '\0';
+
+        char value[128];
+
+        if (fseek(f, (long)extent * SECTOR_SIZE +
+                  dataOffset + dataPos, SEEK_SET) != 0)
+            continue;
+
+        if (fread(value, 1, dataLength, f) != dataLength)
+            continue;
+
+        value[dataLength] = '\0';
+
+        if (strcmp(keyName, "TITLE") == 0)
+            snprintf(title, 128, "%s", value);
+
+        if (strcmp(keyName, "DISC_ID") == 0)
+            snprintf(gameID, 32, "%s", value);
+
+        if (strcmp(keyName, "DISC_VERSION") == 0)
+            snprintf(version, 32, "%s", value);
+    }
+
+    return 1;
 }
 
 static void analyzeISO(const char *name)
 {
     char path[256];
-    unsigned char descriptor[2048];
-    char volume[33];
+    unsigned char pvd[SECTOR_SIZE];
+
+    unsigned int rootExtent, rootSize;
+    unsigned int pspExtent, pspSize;
+    unsigned int sfoExtent, sfoSize;
+
+    char title[128] = "No disponible";
+    char gameID[32] = "No disponible";
+    char version[32] = "No disponible";
 
     snprintf(path, sizeof(path), "sdmc:/PSP/%s", name);
 
-    FILE *file = fopen(path, "rb");
+    FILE *f = fopen(path, "rb");
 
-    if (!file)
+    if (!f)
     {
         snprintf(isoInfo, sizeof(isoInfo),
-                 "No se pudo abrir el archivo.");
+                 "No se pudo abrir el ISO.");
         return;
     }
 
-    if (fseek(file, 16L * 2048L, SEEK_SET) != 0 ||
-        fread(descriptor, 1, sizeof(descriptor), file)
-        != sizeof(descriptor))
+    if (fseek(f, 16L * SECTOR_SIZE, SEEK_SET) != 0 ||
+        fread(pvd, 1, SECTOR_SIZE, f) != SECTOR_SIZE ||
+        pvd[0] != 1 ||
+        memcmp(pvd + 1, "CD001", 5) != 0 ||
+        pvd[6] != 1)
     {
         snprintf(isoInfo, sizeof(isoInfo),
-                 "Archivo demasiado pequeno o incompleto.");
-        fclose(file);
+                 "ISO 9660 no valido.");
+        fclose(f);
         return;
     }
 
-    if (descriptor[0] != 1 ||
-        memcmp(descriptor + 1, "CD001", 5) != 0 ||
-        descriptor[6] != 1)
+    rootExtent = readLE32(pvd + 158);
+    rootSize = readLE32(pvd + 166);
+
+    if (!findISOEntry(f, rootExtent, rootSize,
+                      "PSP_GAME", &pspExtent, &pspSize))
     {
         snprintf(isoInfo, sizeof(isoInfo),
-                 "No se reconoce un descriptor ISO 9660 valido.");
-        fclose(file);
+                 "No se encontro PSP_GAME.");
+        fclose(f);
         return;
     }
 
-    memcpy(volume, descriptor + 40, 32);
-    volume[32] = '\0';
-
-    for (int i = 31; i >= 0; i--)
+    if (!findISOEntry(f, pspExtent, pspSize,
+                      "PARAM.SFO", &sfoExtent, &sfoSize))
     {
-        if (volume[i] == ' ')
-            volume[i] = '\0';
-        else
-            break;
+        snprintf(isoInfo, sizeof(isoInfo),
+                 "No se encontro PARAM.SFO.");
+        fclose(f);
+        return;
     }
 
-    unsigned int sectors = readLE32(descriptor + 80);
-
-    fseek(file, 0, SEEK_END);
-    long fileSize = ftell(file);
-    fclose(file);
+    if (!readSFO(f, sfoExtent, sfoSize,
+                 title, gameID, version))
+    {
+        snprintf(isoInfo, sizeof(isoInfo),
+                 "Error al leer PARAM.SFO.");
+        fclose(f);
+        return;
+    }
 
     snprintf(isoInfo, sizeof(isoInfo),
-        "ISO 9660: VALIDO\n\n"
-        "Volumen: %.32s\n"
-        "Sectores: %u\n"
-        "Tamano ISO: %llu MB\n"
-        "Tamano archivo: %llu MB",
-        volume,
-        sectors,
-        ((unsigned long long)sectors * 2048ULL) /
-            (1024ULL * 1024ULL),
-        fileSize >= 0 ?
-            (unsigned long long)fileSize / (1024ULL * 1024ULL) : 0ULL);
+        "INFORMACION DEL JUEGO\n\n"
+        "Archivo: %.90s\n"
+        "Titulo: %.100s\n"
+        "Game ID: %.20s\n"
+        "Version: %.20s\n\n"
+        "PARAM.SFO analizado.",
+        name, title, gameID, version);
+
+    fclose(f);
 }
 
 static void drawMenu(void)
@@ -144,7 +346,7 @@ static void drawMenu(void)
     consoleClear();
 
     printf("       XAVRX PSP 3DS\n");
-    printf("          VERSION 0.4\n\n");
+    printf("          VERSION 0.5\n\n");
 
     if (page == 0)
     {
@@ -152,8 +354,8 @@ static void drawMenu(void)
 
         for (int i = 0; i < 3; i++)
             printf("%s %s\n\n",
-                   i == selected ? ">" : " ",
-                   options[i]);
+                i == selected ? ">" : " ",
+                options[i]);
 
         printf("\nSTART: Salir");
     }
@@ -184,7 +386,8 @@ static void drawMenu(void)
         printf("       ESTADO DEL SISTEMA\n\n");
         printf("Consola: Nintendo 2DS XL\n");
         printf("Biblioteca: Activa\n");
-        printf("Analizador ISO: Activo\n");
+        printf("ISO Analyzer: Activo\n");
+        printf("PARAM.SFO: Experimental\n");
         printf("CSO: Pendiente\n");
         printf("CPU PSP: Pendiente\n");
         printf("GPU PSP: Pendiente\n");
@@ -195,7 +398,7 @@ static void drawMenu(void)
     {
         printf("       ACERCA DE XAVRX\n\n");
         printf("Proyecto: XAVRX PSP 3DS\n");
-        printf("Version: 0.4\n");
+        printf("Version: 0.5\n");
         printf("Plataforma: Nintendo 3DS\n");
         printf("Objetivo: Emulacion PSP\n");
         printf("\nProyecto experimental.\n");
@@ -203,7 +406,7 @@ static void drawMenu(void)
     }
     else if (page == 4)
     {
-        printf("       ANALISIS ISO\n\n");
+        printf("       GAME INFO\n\n");
         printf("%s\n", isoInfo);
         printf("\nB: Volver");
     }
@@ -213,7 +416,7 @@ static void drawMenu(void)
 
     printf("CONTROLES\n\n");
     printf("Cruceta: Navegar\n");
-    printf("A: Seleccionar / Analizar\n");
+    printf("A: Seleccionar\n");
     printf("X: Actualizar biblioteca\n");
     printf("B: Volver\n");
     printf("START: Salir");
@@ -222,6 +425,7 @@ static void drawMenu(void)
 int main(void)
 {
     gfxInitDefault();
+
     consoleInit(GFX_TOP, &topScreen);
     consoleInit(GFX_BOTTOM, &bottomScreen);
 
@@ -265,6 +469,7 @@ int main(void)
                 if (gameCount > 0)
                     selected = (selected + gameCount - 1)
                                % gameCount;
+
                 drawMenu();
             }
 
@@ -272,21 +477,17 @@ int main(void)
             {
                 if (gameCount > 0)
                     selected = (selected + 1) % gameCount;
+
                 drawMenu();
             }
 
             if ((keys & KEY_A) && gameCount > 0)
             {
-                size_t len = strlen(games[selected]);
-
-                if (len >= 4 &&
-                    tolower((unsigned char)games[selected][len-3]) == 'i' &&
-                    tolower((unsigned char)games[selected][len-2]) == 's' &&
-                    tolower((unsigned char)games[selected][len-1]) == 'o')
+                if (isISO(games[selected]))
                     analyzeISO(games[selected]);
                 else
                     snprintf(isoInfo, sizeof(isoInfo),
-                        "Formato CSO detectado.\n"
+                        "Archivo CSO detectado.\n"
                         "Descompresor pendiente.");
 
                 page = 4;
