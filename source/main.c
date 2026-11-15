@@ -7,6 +7,7 @@
 #include <ctype.h>
 
 #include "psp_core.h"
+#include "psp_elf.h"
 
 #define MAX_GAMES 20
 #define NAME_SIZE 128
@@ -24,7 +25,7 @@ static int page = 0;
 
 static const char *options[] = {
     "BIBLIOTECA PSP",
-    "DIAGNOSTICO DEL NUCLEO",
+    "PRUEBA CARGADOR ELF",
     "CONFIGURACION",
     "ACERCA DE XAVRX"
 };
@@ -41,6 +42,20 @@ static unsigned int readLE32(const unsigned char *p)
            ((unsigned int)p[1] << 8) |
            ((unsigned int)p[2] << 16) |
            ((unsigned int)p[3] << 24);
+}
+
+static void writeLE16(unsigned char *p, unsigned short v)
+{
+    p[0] = (unsigned char)v;
+    p[1] = (unsigned char)(v >> 8);
+}
+
+static void writeLE32(unsigned char *p, unsigned int v)
+{
+    p[0] = (unsigned char)v;
+    p[1] = (unsigned char)(v >> 8);
+    p[2] = (unsigned char)(v >> 16);
+    p[3] = (unsigned char)(v >> 24);
 }
 
 static int isPSPFile(const char *name)
@@ -331,11 +346,8 @@ static void analyzeISO(const char *name)
 
     if (!f)
     {
-        snprintf(
-            isoInfo,
-            sizeof(isoInfo),
-            "No se pudo abrir el ISO."
-        );
+        snprintf(isoInfo, sizeof(isoInfo),
+                 "No se pudo abrir el ISO.");
         return;
     }
 
@@ -345,11 +357,8 @@ static void analyzeISO(const char *name)
         memcmp(pvd + 1, "CD001", 5) != 0 ||
         pvd[6] != 1)
     {
-        snprintf(
-            isoInfo,
-            sizeof(isoInfo),
-            "ISO 9660 no valido."
-        );
+        snprintf(isoInfo, sizeof(isoInfo),
+                 "ISO 9660 no valido.");
 
         fclose(f);
         return;
@@ -363,11 +372,8 @@ static void analyzeISO(const char *name)
         "PSP_GAME", &pspExtent, &pspSize
     ))
     {
-        snprintf(
-            isoInfo,
-            sizeof(isoInfo),
-            "No se encontro PSP_GAME."
-        );
+        snprintf(isoInfo, sizeof(isoInfo),
+                 "No se encontro PSP_GAME.");
 
         fclose(f);
         return;
@@ -378,11 +384,8 @@ static void analyzeISO(const char *name)
         "PARAM.SFO", &sfoExtent, &sfoSize
     ))
     {
-        snprintf(
-            isoInfo,
-            sizeof(isoInfo),
-            "No se encontro PARAM.SFO."
-        );
+        snprintf(isoInfo, sizeof(isoInfo),
+                 "No se encontro PARAM.SFO.");
 
         fclose(f);
         return;
@@ -393,11 +396,8 @@ static void analyzeISO(const char *name)
         title, gameID, version
     ))
     {
-        snprintf(
-            isoInfo,
-            sizeof(isoInfo),
-            "Error al leer PARAM.SFO."
-        );
+        snprintf(isoInfo, sizeof(isoInfo),
+                 "Error al leer PARAM.SFO.");
 
         fclose(f);
         return;
@@ -421,26 +421,120 @@ static void analyzeISO(const char *name)
     fclose(f);
 }
 
-/* PRUEBA INTEGRADA DEL NUCLEO */
+/* GENERADOR DE ELF DE PRUEBA */
+
+static int createTestELF(const char *path)
+{
+    unsigned char elf[0x110];
+
+    memset(elf, 0, sizeof(elf));
+
+    /* Identificacion ELF */
+
+    elf[0] = 0x7F;
+    elf[1] = 'E';
+    elf[2] = 'L';
+    elf[3] = 'F';
+    elf[4] = 1;
+    elf[5] = 1;
+    elf[6] = 1;
+
+    /* Cabecera ELF */
+
+    writeLE16(&elf[16], 2);
+    writeLE16(&elf[18], 8);
+    writeLE32(&elf[20], 1);
+
+    writeLE32(
+        &elf[24],
+        PSP_RAM_BASE + 0x1000
+    );
+
+    writeLE32(&elf[28], 52);
+
+    writeLE16(&elf[40], 52);
+    writeLE16(&elf[42], 32);
+    writeLE16(&elf[44], 1);
+
+    /* Program header */
+
+    writeLE32(&elf[52], 1);
+    writeLE32(&elf[56], 0x100);
+
+    writeLE32(
+        &elf[60],
+        PSP_RAM_BASE + 0x1000
+    );
+
+    writeLE32(
+        &elf[64],
+        PSP_RAM_BASE + 0x1000
+    );
+
+    writeLE32(&elf[68], 16);
+    writeLE32(&elf[72], 16);
+    writeLE32(&elf[76], 5);
+    writeLE32(&elf[80], 0x1000);
+
+    /* Programa MIPS */
+
+    writeLE32(&elf[0x100], 0x2408000A);
+    writeLE32(&elf[0x104], 0x24090014);
+    writeLE32(&elf[0x108], 0x01095021);
+    writeLE32(&elf[0x10C], 0x0000000D);
+
+    FILE *file = fopen(path, "wb");
+
+    if (!file)
+        return 0;
+
+    int success =
+        fwrite(elf, 1, sizeof(elf), file) == sizeof(elf);
+
+    if (fclose(file) != 0)
+        success = 0;
+
+    return success;
+}
+
+/* PRUEBA DEL CARGADOR ELF REAL */
 
 static void runCoreTest(void)
 {
     PSPSystem system;
+    PSPELFInfo info;
 
-    const uint32_t program[] = {
-        0x2408000A,
-        0x24090014,
-        0x01095021,
-        0x0000000D
-    };
-
-    const uint32_t entry = PSP_RAM_BASE + 0x1000;
+    const char *path = "sdmc:/PSP/TEST.ELF";
 
     snprintf(
         cpuTestInfo,
         sizeof(cpuTestInfo),
-        "Inicializando sistema..."
+        "CREANDO TEST.ELF..."
     );
+
+    if (!createTestELF(path))
+    {
+        snprintf(
+            cpuTestInfo,
+            sizeof(cpuTestInfo),
+            "ERROR: No se pudo crear TEST.ELF."
+        );
+        return;
+    }
+
+    PSPELFError inspectResult =
+        pspElfInspect(path, &info);
+
+    if (inspectResult != PSP_ELF_OK)
+    {
+        snprintf(
+            cpuTestInfo,
+            sizeof(cpuTestInfo),
+            "ERROR DE INSPECCION ELF\n\nCodigo: %d",
+            inspectResult
+        );
+        return;
+    }
 
     if (pspSystemInit(&system) != PSP_CORE_OK)
     {
@@ -452,27 +546,27 @@ static void runCoreTest(void)
         return;
     }
 
-    if (!pspMemoryLoad(
-        &system.memory,
-        entry,
-        program,
-        sizeof(program)
-    ))
+    int loadResult =
+        pspSystemLoadELF(&system, path);
+
+    if (loadResult != PSP_CORE_OK)
     {
         snprintf(
             cpuTestInfo,
             sizeof(cpuTestInfo),
-            "ERROR: No se pudo cargar el programa."
+            "ERROR AL CARGAR ELF\n\n"
+            "Codigo: %d\n"
+            "Entrada: 0x%08lX",
+            loadResult,
+            (unsigned long)info.entryPoint
         );
 
         pspSystemDestroy(&system);
         return;
     }
 
-    pspCpuReset(&system.cpu, entry);
-    system.programLoaded = true;
-
-    int execution = pspSystemRun(&system, 16);
+    int execution =
+        pspSystemRun(&system, 16);
 
     int passed =
         execution == 0 &&
@@ -484,23 +578,23 @@ static void runCoreTest(void)
     snprintf(
         cpuTestInfo,
         sizeof(cpuTestInfo),
-        "RESULTADO: %s\n\n"
-        "Sistema: %s\n"
+        "CARGADOR ELF: CORRECTO\n\n"
+        "Ejecucion: %s\n"
+        "Entrada: 0x%08lX\n"
         "Instrucciones: %lu\n"
-        "PC final: 0x%08lX\n"
         "Registro T2: %lu\n"
-        "Error: %d\n\n"
-        "Esperado: 30",
-        passed ? "CORRECTO" : "FALLO",
-        system.initialized ? "INICIALIZADO" : "DETENIDO",
+        "Resultado: %s",
+        passed ? "CORRECTA" : "FALLIDA",
+        (unsigned long)info.entryPoint,
         (unsigned long)system.cpu.instructions,
-        (unsigned long)system.cpu.pc,
         (unsigned long)system.cpu.r[10],
-        execution
+        passed ? "CORRECTO" : "ERROR"
     );
 
     pspSystemDestroy(&system);
 }
+
+/* INTERFAZ */
 
 static void drawHeader(const char *subtitle)
 {
@@ -572,12 +666,12 @@ static void drawMenu(void)
     }
     else if (page == 2)
     {
-        drawHeader("CORE DIAGNOSTICS");
+        drawHeader("ELF LOADER TEST");
 
-        printf("  PRUEBA DEL SISTEMA PSP\n\n");
+        printf("  PRUEBA DEL CARGADOR\n\n");
         printf("%s\n", cpuTestInfo);
 
-        printf("\nA: Ejecutar prueba integrada");
+        printf("\nA: Ejecutar prueba ELF");
     }
     else if (page == 3)
     {
@@ -624,6 +718,8 @@ static void drawMenu(void)
     printf("  XAVRX PSP 3DS v0.15\n");
 }
 
+/* MAIN */
+
 int main(void)
 {
     gfxInitDefault();
@@ -667,7 +763,7 @@ int main(void)
                     snprintf(
                         cpuTestInfo,
                         sizeof(cpuTestInfo),
-                        "Pulsa A para ejecutar la prueba."
+                        "Pulsa A para ejecutar la prueba ELF."
                     );
                 }
 
