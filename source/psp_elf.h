@@ -36,10 +36,7 @@ typedef enum {
     PSP_ELF_ERROR_MEMORY = -7
 } PSPELFError;
 
-PSPELFError pspElfInspect(
-    const char *path,
-    PSPELFInfo *info
-);
+PSPELFError pspElfInspect(const char *path, PSPELFInfo *info);
 
 PSPELFError pspElfLoad(
     const char *path,
