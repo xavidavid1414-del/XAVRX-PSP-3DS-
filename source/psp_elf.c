@@ -183,9 +183,7 @@ PSPELFError pspElfInspect(
             return PSP_ELF_ERROR_READ;
         }
 
-        uint32_t segmentType = read32(ph);
-
-        if (segmentType != ELF_PT_LOAD)
+        if (read32(ph) != ELF_PT_LOAD)
             continue;
 
         if (info->segmentCount >= PSP_ELF_MAX_SEGMENTS)
@@ -204,23 +202,13 @@ PSPELFError pspElfInspect(
         segment->flags = read32(ph + 24);
         segment->alignment = read32(ph + 28);
 
-        if (segment->fileSize > segment->memorySize)
-        {
-            fclose(file);
-            return PSP_ELF_ERROR_SEGMENTS;
-        }
-
-        if (!validFileRange(
-            segment->offset,
-            segment->fileSize,
-            fileSize
-        ))
-        {
-            fclose(file);
-            return PSP_ELF_ERROR_SEGMENTS;
-        }
-
-        if ((uint64_t)segment->virtualAddress +
+        if (segment->fileSize > segment->memorySize ||
+            !validFileRange(
+                segment->offset,
+                segment->fileSize,
+                fileSize
+            ) ||
+            (uint64_t)segment->virtualAddress +
             segment->memorySize > UINT32_MAX)
         {
             fclose(file);
@@ -295,7 +283,7 @@ PSPELFError pspElfLoad(
         }
     }
 
-    /* Cargar segmentos */
+    /* Cargar segmentos y limpiar BSS */
 
     for (uint16_t i = 0; i < parsed.segmentCount; i++)
     {
