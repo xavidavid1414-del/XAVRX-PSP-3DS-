@@ -5,7 +5,6 @@
 #include <string.h>
 #include <dirent.h>
 #include <ctype.h>
-
 #include "psp_test.h"
 
 #define MAX_GAMES 20
@@ -16,17 +15,17 @@ static PrintConsole topScreen, bottomScreen;
 
 static char games[MAX_GAMES][NAME_SIZE];
 static char isoInfo[700];
-static char cpuTestInfo[500] = "Prueba CPU pendiente.";
+static char cpuTestInfo[500] = "Prueba pendiente.";
 
 static int gameCount = 0;
 static int selected = 0;
 static int page = 0;
 
 static const char *options[] = {
-    "Biblioteca PSP",
-    "Estado del sistema",
-    "Acerca de XAVRX",
-    "Prueba de CPU PSP"
+    "BIBLIOTECA PSP",
+    "DIAGNOSTICO",
+    "CONFIGURACION",
+    "ACERCA DE XAVRX"
 };
 
 static unsigned int readLE16(const unsigned char *p)
@@ -46,9 +45,7 @@ static unsigned int readLE32(const unsigned char *p)
 static int isPSPFile(const char *name)
 {
     size_t len = strlen(name);
-
-    if (len < 4)
-        return 0;
+    if (len < 4) return 0;
 
     const char *ext = name + len - 4;
 
@@ -76,19 +73,16 @@ static int isISO(const char *name)
 static void scanGames(void)
 {
     gameCount = 0;
-
     DIR *dir = opendir("sdmc:/PSP");
 
-    if (!dir)
-        return;
+    if (!dir) return;
 
     struct dirent *entry;
 
     while ((entry = readdir(dir)) != NULL &&
            gameCount < MAX_GAMES)
     {
-        if (entry->d_name[0] == '.')
-            continue;
+        if (entry->d_name[0] == '.') continue;
 
         if (isPSPFile(entry->d_name))
         {
@@ -111,7 +105,6 @@ static int sameName(const unsigned char *name,
         if (toupper((unsigned char)name[i]) !=
             toupper((unsigned char)wanted[i]))
             return 0;
-
         i++;
     }
 
@@ -130,7 +123,7 @@ static int findISOEntry(FILE *f,
 
     while (pos < size)
     {
-        unsigned int sectorOffset = pos % SECTOR_SIZE;
+        unsigned int offset = pos % SECTOR_SIZE;
 
         if (fseek(f, (long)extent * SECTOR_SIZE + pos,
                   SEEK_SET) != 0)
@@ -140,14 +133,14 @@ static int findISOEntry(FILE *f,
 
         if (length <= 0)
         {
-            pos += SECTOR_SIZE - sectorOffset;
+            pos += SECTOR_SIZE - offset;
             continue;
         }
 
         if (length < 34 || length > 255 ||
             pos + (unsigned int)length > size)
         {
-            pos += SECTOR_SIZE - sectorOffset;
+            pos += SECTOR_SIZE - offset;
             continue;
         }
 
@@ -238,9 +231,7 @@ static int readSFO(FILE *f,
                 break;
 
             int c = fgetc(f);
-
-            if (c == EOF || c == 0)
-                break;
+            if (c == EOF || c == 0) break;
 
             keyName[j++] = (char)c;
         }
@@ -354,13 +345,10 @@ static void runCpuTest(void)
     PSPMemory memory;
     PSPTestResult result;
 
-    snprintf(cpuTestInfo, sizeof(cpuTestInfo),
-             "Iniciando prueba de CPU...");
-
     if (!pspMemoryInit(&memory))
     {
         snprintf(cpuTestInfo, sizeof(cpuTestInfo),
-                 "ERROR: No se pudo inicializar la memoria PSP.");
+                 "ERROR: No se pudo iniciar memoria.");
         return;
     }
 
@@ -370,9 +358,9 @@ static void runCpuTest(void)
         "RESULTADO: %s\n\n"
         "Instrucciones: %lu\n"
         "PC final: 0x%08lX\n"
-        "Registro t2: %lu\n"
+        "Registro T2: %lu\n"
         "Error: %d\n\n"
-        "Resultado esperado: 30",
+        "Esperado: 30",
         passed ? "CORRECTO" : "FALLO",
         (unsigned long)result.instructionsExecuted,
         (unsigned long)result.finalPC,
@@ -382,35 +370,54 @@ static void runCpuTest(void)
     pspMemoryDestroy(&memory);
 }
 
-static void drawMenu(void)
+static void drawHeader(const char *subtitle)
 {
     consoleSelect(&topScreen);
     consoleClear();
 
-    printf("       XAVRX PSP 3DS\n");
-    printf("          VERSION 0.5\n\n");
+    printf("\x1b[36;1m");
+    printf("================================\n");
+    printf("          X A V R X\n");
+    printf("================================\n");
+    printf("\x1b[37m");
+    printf("       PSP EMULATOR 3DS\n");
+    printf("\x1b[36m");
+    printf("       %s\n", subtitle);
+    printf("\x1b[37m\n");
+}
 
+static void drawMenu(void)
+{
     if (page == 0)
     {
-        printf("       MENU PRINCIPAL\n\n");
+        drawHeader("MAIN MENU");
+
+        printf("  SELECT MODULE\n\n");
 
         for (int i = 0; i < 4; i++)
         {
-            printf("%s %s\n\n",
-                i == selected ? ">" : " ",
-                options[i]);
+            if (i == selected)
+                printf("\x1b[32;1m > ");
+            else
+                printf("   ");
+
+            printf("%s\n\n", options[i]);
+            printf("\x1b[37m");
         }
 
-        printf("\nSTART: Salir");
+        printf("\n--------------------------------\n");
+        printf("SYSTEM: READY\n");
+        printf("BUILD: XAVRX 0.12");
     }
     else if (page == 1)
     {
-        printf("       BIBLIOTECA PSP\n\n");
-        printf("Archivos: %d\n\n", gameCount);
+        drawHeader("GAME LIBRARY");
+
+        printf("  ARCHIVOS: %d\n\n", gameCount);
 
         if (gameCount == 0)
         {
-            printf("No hay archivos detectados.\n");
+            printf("No hay juegos detectados.\n");
             printf("Carpeta: sdmc:/PSP/");
         }
         else
@@ -423,55 +430,57 @@ static void drawMenu(void)
             }
         }
 
-        printf("\nA: Analizar ISO");
+        printf("\nA: Analizar");
         printf("\nX: Actualizar");
-        printf("\nB: Volver");
     }
     else if (page == 2)
     {
-        printf("       ESTADO DEL SISTEMA\n\n");
-        printf("Consola: Nintendo 2DS XL\n");
-        printf("Biblioteca: Activa\n");
-        printf("ISO Analyzer: Activo\n");
-        printf("PARAM.SFO: Experimental\n");
-        printf("CSO: Pendiente\n");
-        printf("CPU PSP: En pruebas\n");
-        printf("GPU PSP: Pendiente\n");
-        printf("Audio PSP: Pendiente\n");
-        printf("\nB: Volver");
+        drawHeader("SYSTEM DIAGNOSTICS");
+
+        printf("  CPU PSP: PRUEBA DISPONIBLE\n\n");
+        printf("%s\n", cpuTestInfo);
+        printf("\nA: Ejecutar prueba CPU");
     }
     else if (page == 3)
     {
-        printf("       ACERCA DE XAVRX\n\n");
-        printf("Proyecto: XAVRX PSP 3DS\n");
-        printf("Version: 0.5\n");
-        printf("Plataforma: Nintendo 3DS\n");
-        printf("Objetivo: Emulacion PSP\n");
-        printf("\nProyecto experimental.\n");
-        printf("\nB: Volver");
+        drawHeader("SETTINGS");
+
+        printf("  CONFIGURACION\n\n");
+        printf("  Biblioteca: sdmc:/PSP/\n");
+        printf("  Formato ISO: Experimental\n");
+        printf("  Formato CSO: Pendiente\n");
+        printf("  GPU PSP: Pendiente\n");
+        printf("  Audio PSP: Pendiente\n");
     }
     else if (page == 4)
     {
-        printf("       GAME INFO\n\n");
-        printf("%s\n", isoInfo);
-        printf("\nB: Volver");
+        drawHeader("ABOUT XAVRX");
+
+        printf("  Proyecto: XAVRX PSP 3DS\n\n");
+        printf("  Version: 0.12\n");
+        printf("  Plataforma: Nintendo 2DS XL\n");
+        printf("  Motor: Experimental\n\n");
+        printf("  Proyecto de emulacion PSP.\n");
     }
     else if (page == 5)
     {
-        printf("       PRUEBA CPU PSP\n\n");
-        printf("%s\n", cpuTestInfo);
-        printf("\nB: Volver");
+        drawHeader("GAME INFORMATION");
+        printf("%s\n", isoInfo);
     }
 
     consoleSelect(&bottomScreen);
     consoleClear();
 
-    printf("CONTROLES\n\n");
-    printf("Cruceta: Navegar\n");
-    printf("A: Seleccionar\n");
-    printf("X: Actualizar biblioteca\n");
-    printf("B: Volver\n");
-    printf("START: Salir");
+    printf("\x1b[36;1m");
+    printf("       XAVRX CONTROLS\n\n");
+    printf("\x1b[37m");
+    printf("  UP / DOWN  Navigate\n");
+    printf("  A          Select\n");
+    printf("  B          Back\n");
+    printf("  X          Refresh library\n");
+    printf("  START      Exit\n\n");
+    printf("--------------------------------\n");
+    printf("  XAVRX PSP 3DS v0.12\n");
 }
 
 int main(void)
@@ -505,22 +514,15 @@ int main(void)
 
             if (keys & KEY_A)
             {
-                if (selected == 0)
-                    page = 1;
-                else if (selected == 1)
-                    page = 2;
-                else if (selected == 2)
-                    page = 3;
-                else
-                {
-                    page = 5;
-                    runCpuTest();
-                }
-
+                page = selected + 1;
                 selected = 0;
 
                 if (page == 1)
                     scanGames();
+
+                if (page == 2)
+                    snprintf(cpuTestInfo, sizeof(cpuTestInfo),
+                             "Pulsa A para ejecutar la prueba.");
 
                 drawMenu();
             }
@@ -550,10 +552,9 @@ int main(void)
                     analyzeISO(games[selected]);
                 else
                     snprintf(isoInfo, sizeof(isoInfo),
-                        "Archivo CSO detectado.\n"
-                        "Descompresor pendiente.");
+                             "CSO detectado. Descompresion pendiente.");
 
-                page = 4;
+                page = 5;
                 drawMenu();
             }
 
@@ -564,11 +565,23 @@ int main(void)
                 drawMenu();
             }
         }
-        else if (keys & KEY_B)
+        else if (page == 2)
         {
-            page = 0;
-            selected = 0;
-            drawMenu();
+            if (keys & KEY_A)
+            {
+                runCpuTest();
+                drawMenu();
+            }
+        }
+
+        if (keys & KEY_B)
+        {
+            if (page != 0)
+            {
+                page = 0;
+                selected = 0;
+                drawMenu();
+            }
         }
 
         if (keys & KEY_START)
