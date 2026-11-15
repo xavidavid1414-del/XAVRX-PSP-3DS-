@@ -6,6 +6,8 @@
 #include <dirent.h>
 #include <ctype.h>
 
+#include "psp_test.h"
+
 #define MAX_GAMES 20
 #define NAME_SIZE 128
 #define SECTOR_SIZE 2048
@@ -14,6 +16,7 @@ static PrintConsole topScreen, bottomScreen;
 
 static char games[MAX_GAMES][NAME_SIZE];
 static char isoInfo[700];
+static char cpuTestInfo[500] = "Prueba CPU pendiente.";
 
 static int gameCount = 0;
 static int selected = 0;
@@ -22,7 +25,8 @@ static int page = 0;
 static const char *options[] = {
     "Biblioteca PSP",
     "Estado del sistema",
-    "Acerca de XAVRX"
+    "Acerca de XAVRX",
+    "Prueba de CPU PSP"
 };
 
 static unsigned int readLE16(const unsigned char *p)
@@ -43,18 +47,20 @@ static int isPSPFile(const char *name)
 {
     size_t len = strlen(name);
 
-    if (len < 4) return 0;
+    if (len < 4)
+        return 0;
 
     const char *ext = name + len - 4;
 
-    return (tolower((unsigned char)ext[0]) == '.' &&
-            tolower((unsigned char)ext[1]) == 'i' &&
-            tolower((unsigned char)ext[2]) == 's' &&
-            tolower((unsigned char)ext[3]) == 'o') ||
-           (tolower((unsigned char)ext[0]) == '.' &&
-            tolower((unsigned char)ext[1]) == 'c' &&
-            tolower((unsigned char)ext[2]) == 's' &&
-            tolower((unsigned char)ext[3]) == 'o');
+    return
+        (tolower((unsigned char)ext[0]) == '.' &&
+         tolower((unsigned char)ext[1]) == 'i' &&
+         tolower((unsigned char)ext[2]) == 's' &&
+         tolower((unsigned char)ext[3]) == 'o') ||
+        (tolower((unsigned char)ext[0]) == '.' &&
+         tolower((unsigned char)ext[1]) == 'c' &&
+         tolower((unsigned char)ext[2]) == 's' &&
+         tolower((unsigned char)ext[3]) == 'o');
 }
 
 static int isISO(const char *name)
@@ -73,14 +79,16 @@ static void scanGames(void)
 
     DIR *dir = opendir("sdmc:/PSP");
 
-    if (!dir) return;
+    if (!dir)
+        return;
 
     struct dirent *entry;
 
     while ((entry = readdir(dir)) != NULL &&
            gameCount < MAX_GAMES)
     {
-        if (entry->d_name[0] == '.') continue;
+        if (entry->d_name[0] == '.')
+            continue;
 
         if (isPSPFile(entry->d_name))
         {
@@ -231,7 +239,8 @@ static int readSFO(FILE *f,
 
             int c = fgetc(f);
 
-            if (c == EOF || c == 0) break;
+            if (c == EOF || c == 0)
+                break;
 
             keyName[j++] = (char)c;
         }
@@ -340,6 +349,39 @@ static void analyzeISO(const char *name)
     fclose(f);
 }
 
+static void runCpuTest(void)
+{
+    PSPMemory memory;
+    PSPTestResult result;
+
+    snprintf(cpuTestInfo, sizeof(cpuTestInfo),
+             "Iniciando prueba de CPU...");
+
+    if (!pspMemoryInit(&memory))
+    {
+        snprintf(cpuTestInfo, sizeof(cpuTestInfo),
+                 "ERROR: No se pudo inicializar la memoria PSP.");
+        return;
+    }
+
+    bool passed = pspTestRunBasic(&memory, &result);
+
+    snprintf(cpuTestInfo, sizeof(cpuTestInfo),
+        "RESULTADO: %s\n\n"
+        "Instrucciones: %lu\n"
+        "PC final: 0x%08lX\n"
+        "Registro t2: %lu\n"
+        "Error: %d\n\n"
+        "Resultado esperado: 30",
+        passed ? "CORRECTO" : "FALLO",
+        (unsigned long)result.instructionsExecuted,
+        (unsigned long)result.finalPC,
+        (unsigned long)result.result,
+        result.error);
+
+    pspMemoryDestroy(&memory);
+}
+
 static void drawMenu(void)
 {
     consoleSelect(&topScreen);
@@ -352,10 +394,12 @@ static void drawMenu(void)
     {
         printf("       MENU PRINCIPAL\n\n");
 
-        for (int i = 0; i < 3; i++)
+        for (int i = 0; i < 4; i++)
+        {
             printf("%s %s\n\n",
                 i == selected ? ">" : " ",
                 options[i]);
+        }
 
         printf("\nSTART: Salir");
     }
@@ -372,9 +416,11 @@ static void drawMenu(void)
         else
         {
             for (int i = 0; i < gameCount; i++)
+            {
                 printf("%s %s\n",
                     i == selected ? ">" : " ",
                     games[i]);
+            }
         }
 
         printf("\nA: Analizar ISO");
@@ -389,7 +435,7 @@ static void drawMenu(void)
         printf("ISO Analyzer: Activo\n");
         printf("PARAM.SFO: Experimental\n");
         printf("CSO: Pendiente\n");
-        printf("CPU PSP: Pendiente\n");
+        printf("CPU PSP: En pruebas\n");
         printf("GPU PSP: Pendiente\n");
         printf("Audio PSP: Pendiente\n");
         printf("\nB: Volver");
@@ -408,6 +454,12 @@ static void drawMenu(void)
     {
         printf("       GAME INFO\n\n");
         printf("%s\n", isoInfo);
+        printf("\nB: Volver");
+    }
+    else if (page == 5)
+    {
+        printf("       PRUEBA CPU PSP\n\n");
+        printf("%s\n", cpuTestInfo);
         printf("\nB: Volver");
     }
 
@@ -441,19 +493,30 @@ int main(void)
         {
             if (keys & KEY_UP)
             {
-                selected = (selected + 2) % 3;
+                selected = (selected + 3) % 4;
                 drawMenu();
             }
 
             if (keys & KEY_DOWN)
             {
-                selected = (selected + 1) % 3;
+                selected = (selected + 1) % 4;
                 drawMenu();
             }
 
             if (keys & KEY_A)
             {
-                page = selected + 1;
+                if (selected == 0)
+                    page = 1;
+                else if (selected == 1)
+                    page = 2;
+                else if (selected == 2)
+                    page = 3;
+                else
+                {
+                    page = 5;
+                    runCpuTest();
+                }
+
                 selected = 0;
 
                 if (page == 1)
