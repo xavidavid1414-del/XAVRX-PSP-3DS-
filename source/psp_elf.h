@@ -1,7 +1,9 @@
+
 #ifndef PSP_ELF_H
 #define PSP_ELF_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "psp_memory.h"
 
 #define PSP_ELF_MAX_SEGMENTS 16
