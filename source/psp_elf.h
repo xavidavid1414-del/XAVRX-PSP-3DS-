@@ -1,8 +1,8 @@
-
 #ifndef PSP_ELF_H
 #define PSP_ELF_H
 
 #include <stdint.h>
+#include "psp_memory.h"
 
 #define PSP_ELF_MAX_SEGMENTS 16
 
@@ -30,11 +30,18 @@ typedef enum {
     PSP_ELF_ERROR_FORMAT = -3,
     PSP_ELF_ERROR_MACHINE = -4,
     PSP_ELF_ERROR_SEGMENTS = -5,
-    PSP_ELF_ERROR_READ = -6
+    PSP_ELF_ERROR_READ = -6,
+    PSP_ELF_ERROR_MEMORY = -7
 } PSPELFError;
 
 PSPELFError pspElfInspect(
     const char *path,
+    PSPELFInfo *info
+);
+
+PSPELFError pspElfLoad(
+    const char *path,
+    PSPMemory *memory,
     PSPELFInfo *info
 );
 
