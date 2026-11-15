@@ -1,7 +1,7 @@
+
 #include "psp_core.h"
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <limits.h>
 
@@ -24,13 +24,13 @@ static uint32_t read32(const uint8_t *p) {
 }
 
 int pspSystemInit(PSPSystem *system) {
-    if (system == NULL) return PSP_CORE_ERROR;
+    if (system == NULL)
+        return PSP_CORE_ERROR;
 
     memset(system, 0, sizeof(*system));
 
-    if (pspMemoryInit(&system->memory) != 0) {
+    if (pspMemoryInit(&system->memory) != 0)
         return PSP_CORE_MEMORY_ERROR;
-    }
 
     pspCpuReset(&system->cpu, 0);
 
@@ -41,24 +41,23 @@ int pspSystemInit(PSPSystem *system) {
 }
 
 void pspSystemDestroy(PSPSystem *system) {
-    if (system == NULL) return;
+    if (system == NULL)
+        return;
 
-    if (system->initialized) {
+    if (system->initialized)
         pspMemoryDestroy(&system->memory);
-    }
 
     memset(system, 0, sizeof(*system));
 }
 
-int pspSystemLoadELF(
-    PSPSystem *system,
-    const char *path
-) {
+int pspSystemLoadELF(PSPSystem *system, const char *path) {
     if (system == NULL || path == NULL)
         return PSP_CORE_ERROR;
 
     if (!system->initialized)
         return PSP_CORE_ERROR;
+
+    system->programLoaded = false;
 
     FILE *file = fopen(path, "rb");
 
@@ -104,6 +103,13 @@ int pspSystemLoadELF(
         return PSP_CORE_UNSUPPORTED;
     }
 
+    uint16_t elfType = read16(&header[16]);
+
+    if (elfType != 2 && elfType != 3) {
+        fclose(file);
+        return PSP_CORE_UNSUPPORTED;
+    }
+
     uint32_t entry = read32(&header[24]);
     uint32_t phoff = read32(&header[28]);
 
@@ -126,12 +132,9 @@ int pspSystemLoadELF(
         return PSP_CORE_INVALID_ELF;
     }
 
-    memset(system->memory.data, 0, system->memory.size);
-
     unsigned loadedSegments = 0;
 
     for (uint16_t i = 0; i < phnum; i++) {
-
         uint64_t position =
             (uint64_t)phoff +
             (uint64_t)i * phentsize;
@@ -149,9 +152,7 @@ int pspSystemLoadELF(
             return PSP_CORE_FILE_ERROR;
         }
 
-        uint32_t type = read32(&ph[0]);
-
-        if (type != ELF_PT_LOAD)
+        if (read32(&ph[0]) != ELF_PT_LOAD)
             continue;
 
         uint32_t offset = read32(&ph[4]);
@@ -159,60 +160,36 @@ int pspSystemLoadELF(
         uint32_t fileSize = read32(&ph[16]);
         uint32_t memorySize = read32(&ph[20]);
 
-        if (fileSize > memorySize ||
-            memorySize == 0) {
+        if (fileSize > memorySize || memorySize == 0) {
             fclose(file);
             return PSP_CORE_INVALID_ELF;
         }
 
-        if ((uint64_t)offset + fileSize >
-            (uint64_t)fileLength) {
+        if ((uint64_t)offset + fileSize > (uint64_t)fileLength) {
             fclose(file);
             return PSP_CORE_INVALID_ELF;
         }
 
-        uint32_t memoryOffset;
-
-        if (!pspMemoryTranslate(
-                &system->memory,
-                address,
-                memorySize,
-                &memoryOffset)) {
-            fclose(file);
-            return PSP_CORE_MEMORY_ERROR;
-        }
-
-        uint8_t *segment = (uint8_t *)calloc(1, memorySize);
-
-        if (segment == NULL) {
-            fclose(file);
-            return PSP_CORE_MEMORY_ERROR;
-        }
-
-        if (fileSize > 0) {
-
-            if (offset > LONG_MAX ||
-                fseek(file, (long)offset, SEEK_SET) != 0 ||
-                fread(segment, 1, fileSize, file) != fileSize) {
-
-                free(segment);
-                fclose(file);
-                return PSP_CORE_FILE_ERROR;
-            }
-        }
-
-        int result = pspMemoryLoad(
+        uint8_t *destination = pspMemoryTranslate(
             &system->memory,
             address,
-            segment,
             memorySize
         );
 
-        free(segment);
-
-        if (result != 0) {
+        if (destination == NULL) {
             fclose(file);
             return PSP_CORE_MEMORY_ERROR;
+        }
+
+        memset(destination, 0, memorySize);
+
+        if (fileSize > 0) {
+            if (offset > LONG_MAX ||
+                fseek(file, (long)offset, SEEK_SET) != 0 ||
+                fread(destination, 1, fileSize, file) != fileSize) {
+                fclose(file);
+                return PSP_CORE_FILE_ERROR;
+            }
         }
 
         loadedSegments++;
@@ -223,15 +200,8 @@ int pspSystemLoadELF(
     if (loadedSegments == 0)
         return PSP_CORE_INVALID_ELF;
 
-    uint32_t entryOffset;
-
-    if (!pspMemoryTranslate(
-            &system->memory,
-            entry,
-            4,
-            &entryOffset)) {
+    if (pspMemoryTranslate(&system->memory, entry, 4) == NULL)
         return PSP_CORE_MEMORY_ERROR;
-    }
 
     pspCpuReset(&system->cpu, entry);
 
@@ -247,16 +217,10 @@ int pspSystemStep(PSPSystem *system) {
         return PSP_CORE_ERROR;
     }
 
-    return pspCpuStep(
-        &system->cpu,
-        &system->memory
-    );
+    return pspCpuStep(&system->cpu, &system->memory);
 }
 
-int pspSystemRun(
-    PSPSystem *system,
-    uint32_t maxInstructions
-) {
+int pspSystemRun(PSPSystem *system, uint32_t maxInstructions) {
     if (system == NULL ||
         !system->initialized ||
         !system->programLoaded) {
